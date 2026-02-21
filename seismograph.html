@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Seismograph</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0a; overflow: hidden; font-family: monospace; }
+  canvas { position: fixed; top: 0; left: 0; }
+  #info {
+    position: fixed;
+    bottom: 20px;
+    left: 20px;
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 12px;
+    line-height: 1.8;
+    z-index: 1;
+  }
+  #info .highlight {
+    color: rgba(255, 255, 255, 0.6);
+  }
+  .attribution {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    color: rgba(255, 255, 255, 0.15);
+    font-size: 11px;
+    z-index: 1;
+  }
+  #loading {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="loading">listening...</div>
+<div id="info"></div>
+<div class="attribution">hugh — seismograph — live USGS data</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, W, H);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Fetch real earthquake data
+async function fetchQuakes() {
+  try {
+    const res = await fetch('https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson');
+    const data = await res.json();
+    return data.features.map(f => ({
+      mag: f.properties.mag,
+      place: f.properties.place,
+      time: f.properties.time,
+      lon: f.geometry.coordinates[0],
+      lat: f.geometry.coordinates[1],
+      depth: f.geometry.coordinates[2]
+    }));
+  } catch (e) {
+    return [];
+  }
+}
+
+// Map longitude/latitude to canvas position
+function mapPos(lon, lat) {
+  // Simple equirectangular projection
+  const x = ((lon + 180) / 360) * W;
+  const y = ((90 - lat) / 180) * H;
+  return [x, y];
+}
+
+// Ripple class — each earthquake becomes expanding rings
+class Ripple {
+  constructor(quake) {
+    this.quake = quake;
+    const [x, y] = mapPos(quake.lon, quake.lat);
+    this.x = x;
+    this.y = y;
+    this.mag = quake.mag;
+    this.maxRadius = this.mag * 25 + 20;
+    this.rings = [];
+    this.nextRing = 0;
+    this.ringInterval = 40;
+    this.done = false;
+    // Color based on magnitude
+    this.hue = this.mag < 3 ? 200 : this.mag < 4 ? 40 : this.mag < 5 ? 20 : 0;
+    this.spawned = 0;
+    this.totalRings = Math.floor(2 + this.mag);
+  }
+
+  update() {
+    this.nextRing++;
+    if (this.nextRing >= this.ringInterval && this.spawned < this.totalRings) {
+      this.rings.push({ radius: 0, alpha: 0.6 });
+      this.nextRing = 0;
+      this.spawned++;
+    }
+
+    for (const ring of this.rings) {
+      ring.radius += 0.5 + this.mag * 0.3;
+      ring.alpha *= 0.993;
+    }
+
+    this.rings = this.rings.filter(r => r.alpha > 0.01);
+    this.done = this.rings.length === 0 && this.spawned >= this.totalRings;
+  }
+
+  draw() {
+    for (const ring of this.rings) {
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, ring.radius, 0, Math.PI * 2);
+      ctx.strokeStyle = `hsla(${this.hue}, 60%, 55%, ${ring.alpha})`;
+      ctx.lineWidth = 0.5 + this.mag * 0.3;
+      ctx.stroke();
+    }
+
+    // Center dot
+    if (this.rings.length > 0) {
+      const a = Math.max(...this.rings.map(r => r.alpha));
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = `hsla(${this.hue}, 70%, 70%, ${a})`;
+      ctx.fill();
+    }
+  }
+}
+
+// Draw faint coastline grid
+function drawGrid() {
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+  ctx.lineWidth = 0.5;
+  // Longitude lines every 30 degrees
+  for (let lon = -180; lon <= 180; lon += 30) {
+    const x = ((lon + 180) / 360) * W;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+  }
+  // Latitude lines every 30 degrees
+  for (let lat = -90; lat <= 90; lat += 30) {
+    const y = ((90 - lat) / 180) * H;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  }
+  // Equator slightly brighter
+  const eq = H / 2;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+  ctx.beginPath();
+  ctx.moveTo(0, eq);
+  ctx.lineTo(W, eq);
+  ctx.stroke();
+}
+
+let ripples = [];
+let quakeQueue = [];
+let currentQuake = null;
+
+async function init() {
+  const quakes = await fetchQuakes();
+  document.getElementById('loading').style.display = 'none';
+
+  // Sort by time, oldest first
+  quakes.sort((a, b) => a.time - b.time);
+  quakeQueue = quakes;
+
+  document.getElementById('info').innerHTML =
+    `<span class="highlight">${quakes.length}</span> earthquakes M2.5+ in the last 24 hours<br>` +
+    `largest: <span class="highlight">M${Math.max(...quakes.map(q => q.mag)).toFixed(1)}</span>`;
+
+  drawGrid();
+  // Stagger quakes over time
+  let delay = 0;
+  for (const q of quakeQueue) {
+    setTimeout(() => {
+      ripples.push(new Ripple(q));
+    }, delay);
+    delay += 800; // new quake every 800ms
+  }
+
+  // After all have played, restart with fresh data
+  setTimeout(async () => {
+    const fresh = await fetchQuakes();
+    fresh.sort((a, b) => a.time - b.time);
+    quakeQueue = fresh;
+    let d2 = 0;
+    for (const q of quakeQueue) {
+      setTimeout(() => ripples.push(new Ripple(q)), d2);
+      d2 += 800;
+    }
+  }, delay + 5000);
+
+  animate();
+}
+
+function animate() {
+  // Slow fade
+  ctx.fillStyle = 'rgba(10, 10, 10, 0.02)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Redraw grid faintly
+  if (Math.random() < 0.01) drawGrid();
+
+  for (const r of ripples) {
+    r.update();
+    r.draw();
+  }
+  ripples = ripples.filter(r => !r.done);
+
+  requestAnimationFrame(animate);
+}
+
+init();
+</script>
+</body>
+</html>

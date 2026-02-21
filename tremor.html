@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tremor</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a;
+    overflow: hidden;
+    font-family: monospace;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+  }
+  canvas { position: fixed; top: 0; left: 0; z-index: 0; }
+  #start {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 2;
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 14px;
+    font-family: monospace;
+    cursor: pointer;
+    padding: 20px 40px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 4px;
+    background: rgba(10, 10, 10, 0.9);
+    transition: border-color 0.3s;
+  }
+  #start:hover { border-color: rgba(255, 255, 255, 0.3); }
+  #info {
+    position: fixed;
+    bottom: 20px;
+    left: 20px;
+    color: rgba(255, 255, 255, 0.25);
+    font-size: 11px;
+    line-height: 1.8;
+    z-index: 1;
+  }
+  #current {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: rgba(255, 255, 255, 0);
+    font-size: 13px;
+    z-index: 1;
+    text-align: center;
+    line-height: 1.8;
+    transition: color 1s;
+    pointer-events: none;
+  }
+  #current.show { color: rgba(255, 255, 255, 0.4); }
+  #current.hide { color: rgba(255, 255, 255, 0); }
+  .attribution {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    color: rgba(255, 255, 255, 0.15);
+    font-size: 11px;
+    z-index: 1;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="start">listen to the earth</div>
+<div id="current"></div>
+<div id="info"></div>
+<div class="attribution">hugh — tremor — data sonification</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+let audioCtx = null;
+let quakes = [];
+let playing = false;
+let currentIndex = 0;
+
+// Fetch earthquake data
+async function fetchQuakes() {
+  const res = await fetch('https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson');
+  const data = await res.json();
+  quakes = data.features.map(f => ({
+    mag: f.properties.mag,
+    place: f.properties.place,
+    time: f.properties.time,
+    depth: f.geometry.coordinates[2],
+    lon: f.geometry.coordinates[0],
+    lat: f.geometry.coordinates[1]
+  })).sort((a, b) => a.time - b.time);
+
+  document.getElementById('info').innerHTML =
+    `${quakes.length} earthquakes in the last 24 hours`;
+}
+
+// Map magnitude to musical frequency (pentatonic scale feel)
+function magToFreq(mag) {
+  // M2.5 → low, M7+ → high
+  // Map to a range that sounds good
+  const baseFreq = 80;
+  const normalized = (mag - 2) / 5; // 2-7 range → 0-1
+  return baseFreq * Math.pow(2, normalized * 3); // 3 octaves
+}
+
+// Map depth to reverb/filter
+function depthToDetune(depth) {
+  // Shallow = bright, deep = dark
+  return -depth * 2; // cents of detune
+}
+
+// Play a single earthquake as sound
+function playQuake(quake) {
+  if (!audioCtx) return;
+
+  const freq = magToFreq(quake.mag);
+  const duration = 0.5 + quake.mag * 0.4;
+  const now = audioCtx.currentTime;
+
+  // Main tone
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  const filter = audioCtx.createBiquadFilter();
+
+  osc.type = 'sine';
+  osc.frequency.value = freq;
+  osc.detune.value = depthToDetune(quake.depth);
+
+  filter.type = 'lowpass';
+  filter.frequency.value = 800 + quake.mag * 200;
+  filter.Q.value = 2;
+
+  // Volume based on magnitude
+  const vol = 0.05 + (quake.mag - 2) * 0.06;
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(vol, now + 0.05);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+  osc.connect(filter);
+  filter.connect(gain);
+  gain.connect(audioCtx.destination);
+
+  osc.start(now);
+  osc.stop(now + duration);
+
+  // Sub-bass rumble for bigger quakes
+  if (quake.mag > 3.5) {
+    const sub = audioCtx.createOscillator();
+    const subGain = audioCtx.createGain();
+    sub.type = 'sine';
+    sub.frequency.value = freq / 4;
+    const subVol = (quake.mag - 3.5) * 0.04;
+    subGain.gain.setValueAtTime(0, now);
+    subGain.gain.linearRampToValueAtTime(subVol, now + 0.1);
+    subGain.gain.exponentialRampToValueAtTime(0.001, now + duration * 1.5);
+    sub.connect(subGain);
+    subGain.connect(audioCtx.destination);
+    sub.start(now);
+    sub.stop(now + duration * 1.5);
+  }
+
+  // Harmonic overtone for bigger quakes
+  if (quake.mag > 4) {
+    const harm = audioCtx.createOscillator();
+    const harmGain = audioCtx.createGain();
+    harm.type = 'triangle';
+    harm.frequency.value = freq * 1.5;
+    const harmVol = (quake.mag - 4) * 0.02;
+    harmGain.gain.setValueAtTime(0, now);
+    harmGain.gain.linearRampToValueAtTime(harmVol, now + 0.08);
+    harmGain.gain.exponentialRampToValueAtTime(0.001, now + duration * 0.8);
+    harm.connect(harmGain);
+    harmGain.connect(audioCtx.destination);
+    harm.start(now);
+    harm.stop(now + duration * 0.8);
+  }
+}
+
+// Visual pulse for each quake
+function drawPulse(quake) {
+  const x = ((quake.lon + 180) / 360) * W;
+  const y = ((90 - quake.lat) / 180) * H;
+  const maxR = quake.mag * 20;
+
+  let r = 0;
+  let alpha = 0.5;
+  const hue = quake.mag < 3 ? 200 : quake.mag < 4.5 ? 40 : 0;
+
+  function pulse() {
+    r += 2;
+    alpha *= 0.97;
+    if (alpha < 0.01) return;
+
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = `hsla(${hue}, 60%, 55%, ${alpha})`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    requestAnimationFrame(pulse);
+  }
+  pulse();
+}
+
+// Play through all quakes sequentially
+function playSequence() {
+  if (currentIndex >= quakes.length) {
+    // Loop
+    currentIndex = 0;
+    setTimeout(playSequence, 3000);
+    return;
+  }
+
+  const q = quakes[currentIndex];
+  playQuake(q);
+  drawPulse(q);
+
+  // Show info
+  const el = document.getElementById('current');
+  el.textContent = `M${q.mag.toFixed(1)} — ${q.place}\n${q.depth.toFixed(0)} km deep`;
+  el.className = 'show';
+  setTimeout(() => el.className = 'hide', 1500);
+
+  currentIndex++;
+
+  // Gap between quakes: longer pause for bigger ones
+  const gap = 800 + (q.mag > 4 ? 1200 : 400);
+  setTimeout(playSequence, gap);
+}
+
+// Slow background fade
+function animate() {
+  ctx.fillStyle = 'rgba(10, 10, 10, 0.02)';
+  ctx.fillRect(0, 0, W, H);
+  requestAnimationFrame(animate);
+}
+
+// Start on click (required for Web Audio)
+document.getElementById('start').addEventListener('click', async () => {
+  document.getElementById('start').style.display = 'none';
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  await fetchQuakes();
+
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Draw faint grid
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+  ctx.lineWidth = 0.5;
+  for (let lon = -180; lon <= 180; lon += 30) {
+    const x = ((lon + 180) / 360) * W;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let lat = -90; lat <= 90; lat += 30) {
+    const y = ((90 - lat) / 180) * H;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+
+  animate();
+
+  // Small delay then start
+  setTimeout(playSequence, 1000);
+});
+</script>
+</body>
+</html>

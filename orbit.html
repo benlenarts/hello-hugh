@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Orbit</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0a; overflow: hidden; font-family: monospace; }
+  canvas { position: fixed; top: 0; left: 0; }
+  #data {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 12px;
+    line-height: 2;
+    z-index: 1;
+  }
+  #data .value {
+    color: rgba(255, 255, 255, 0.7);
+  }
+  #data .label {
+    color: rgba(255, 255, 255, 0.25);
+  }
+  #people {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 11px;
+    line-height: 2;
+    text-align: right;
+    z-index: 1;
+  }
+  #people .count {
+    font-size: 32px;
+    color: rgba(255, 255, 255, 0.6);
+    line-height: 1.2;
+  }
+  .attribution {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255, 255, 255, 0.15);
+    font-size: 11px;
+    z-index: 1;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="data"></div>
+<div id="people"></div>
+<div class="attribution">hugh — orbit — live ISS tracking</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Map projection (equirectangular)
+function project(lon, lat) {
+  return [
+    ((lon + 180) / 360) * W,
+    ((90 - lat) / 180) * H
+  ];
+}
+
+// Draw minimal world grid
+function drawGrid() {
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+  ctx.lineWidth = 0.5;
+  for (let lon = -180; lon <= 180; lon += 30) {
+    const x = ((lon + 180) / 360) * W;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let lat = -90; lat <= 90; lat += 30) {
+    const y = ((90 - lat) / 180) * H;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  // Equator
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.07)';
+  ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
+  // Tropics (ISS orbit is roughly ±51.6°)
+  ctx.strokeStyle = 'rgba(120, 180, 255, 0.05)';
+  ctx.setLineDash([4, 8]);
+  const tropicY1 = ((90 - 51.6) / 180) * H;
+  const tropicY2 = ((90 + 51.6) / 180) * H;
+  ctx.beginPath(); ctx.moveTo(0, tropicY1); ctx.lineTo(W, tropicY1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, tropicY2); ctx.lineTo(W, tropicY2); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+// Trail of past positions
+const trail = [];
+const MAX_TRAIL = 600;
+let currentPos = null;
+let issData = null;
+
+async function fetchISS() {
+  try {
+    const res = await fetch('https://api.wheretheiss.at/v1/satellites/25544');
+    const data = await res.json();
+    issData = data;
+    const pos = { lon: data.longitude, lat: data.latitude, time: Date.now() };
+    trail.push(pos);
+    if (trail.length > MAX_TRAIL) trail.shift();
+    currentPos = pos;
+
+    // Update data display
+    document.getElementById('data').innerHTML =
+      `<span class="label">lat</span> <span class="value">${data.latitude.toFixed(4)}°</span><br>` +
+      `<span class="label">lon</span> <span class="value">${data.longitude.toFixed(4)}°</span><br>` +
+      `<span class="label">alt</span> <span class="value">${data.altitude.toFixed(1)} km</span><br>` +
+      `<span class="label">vel</span> <span class="value">${data.velocity.toFixed(0)} km/h</span><br>` +
+      `<span class="label">vis</span> <span class="value">${data.visibility}</span>`;
+  } catch (e) {
+    // silently retry next interval
+  }
+}
+
+async function fetchAstronauts() {
+  try {
+    const res = await fetch('https://api.wheretheiss.at/v1/satellites/25544');
+    // Open Notify astros endpoint may not work from browser, use static fallback
+  } catch(e) {}
+}
+
+// Poll ISS position every 3 seconds
+fetchISS();
+setInterval(fetchISS, 3000);
+
+// Particles that drift from the ISS trail
+const particles = [];
+
+function spawnParticle(x, y) {
+  particles.push({
+    x, y,
+    vx: (Math.random() - 0.5) * 0.3,
+    vy: (Math.random() - 0.5) * 0.3,
+    life: 1,
+    decay: 0.002 + Math.random() * 0.003,
+    size: 0.5 + Math.random() * 1.5
+  });
+}
+
+function drawFrame() {
+  // Fade
+  ctx.fillStyle = 'rgba(10, 10, 10, 0.04)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Redraw grid occasionally
+  if (Math.random() < 0.005) drawGrid();
+
+  // Draw trail
+  if (trail.length > 1) {
+    for (let i = 1; i < trail.length; i++) {
+      const prev = trail[i - 1];
+      const curr = trail[i];
+
+      // Don't draw line if it wraps around the world
+      if (Math.abs(curr.lon - prev.lon) > 180) continue;
+
+      const [x1, y1] = project(prev.lon, prev.lat);
+      const [x2, y2] = project(curr.lon, curr.lat);
+      const age = (trail.length - i) / trail.length;
+      const alpha = (1 - age) * 0.6;
+
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.strokeStyle = `rgba(120, 180, 255, ${alpha})`;
+      ctx.lineWidth = 1 + (1 - age) * 1.5;
+      ctx.stroke();
+    }
+  }
+
+  // Draw current position
+  if (currentPos) {
+    const [x, y] = project(currentPos.lon, currentPos.lat);
+
+    // Glow
+    const grd = ctx.createRadialGradient(x, y, 0, x, y, 40);
+    grd.addColorStop(0, 'rgba(120, 180, 255, 0.15)');
+    grd.addColorStop(1, 'transparent');
+    ctx.fillStyle = grd;
+    ctx.fillRect(x - 40, y - 40, 80, 80);
+
+    // Dot
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(120, 180, 255, 0.9)';
+    ctx.fill();
+
+    // Spawn particles from current position
+    if (Math.random() < 0.3) spawnParticle(x, y);
+  }
+
+  // Update and draw particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life -= p.decay;
+
+    if (p.life <= 0) {
+      particles.splice(i, 1);
+      continue;
+    }
+
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(120, 180, 255, ${p.life * 0.3})`;
+    ctx.fill();
+  }
+
+  requestAnimationFrame(drawFrame);
+}
+
+// Init
+ctx.fillStyle = '#0a0a0a';
+ctx.fillRect(0, 0, W, H);
+drawGrid();
+drawFrame();
+</script>
+</body>
+</html>

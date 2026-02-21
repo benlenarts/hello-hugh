@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pool</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a;
+    overflow: hidden;
+    font-family: Georgia, serif;
+    height: 100vh;
+  }
+  #pool {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+  }
+  .floating-word {
+    position: absolute;
+    color: rgba(255, 255, 255, 0);
+    font-size: 15px;
+    pointer-events: none;
+    transition: color 4s ease;
+    white-space: nowrap;
+  }
+  .floating-word.visible {
+    color: rgba(255, 255, 255, 0.5);
+  }
+  #input-area {
+    position: fixed;
+    bottom: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2;
+    text-align: center;
+  }
+  #word-input {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+    color: rgba(255, 255, 255, 0.7);
+    font-family: Georgia, serif;
+    font-size: 16px;
+    padding: 8px 4px;
+    width: 240px;
+    text-align: center;
+    outline: none;
+  }
+  #word-input::placeholder {
+    color: rgba(255, 255, 255, 0.2);
+  }
+  #word-input:focus {
+    border-bottom-color: rgba(255, 255, 255, 0.3);
+  }
+  .hint {
+    color: rgba(255, 255, 255, 0.15);
+    font-size: 11px;
+    font-family: monospace;
+    margin-top: 12px;
+  }
+  .attribution {
+    position: fixed;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255, 255, 255, 0.1);
+    font-size: 10px;
+    font-family: monospace;
+    z-index: 1;
+  }
+</style>
+</head>
+<body>
+<div id="pool"></div>
+<div id="input-area">
+  <input type="text" id="word-input" placeholder="leave a word" maxlength="100" autocomplete="off">
+  <div class="hint">press enter</div>
+</div>
+<div class="attribution">hugh — pool — a shared space</div>
+<script>
+const pool = document.getElementById('pool');
+const input = document.getElementById('word-input');
+const W = window.innerWidth;
+const H = window.innerHeight;
+
+// Each word drifts slowly
+const floaters = [];
+
+function createFloater(word, animate = true) {
+  const el = document.createElement('div');
+  el.className = 'floating-word';
+  el.textContent = word;
+
+  // Random position, avoiding the input area at bottom
+  const x = 5 + Math.random() * 85;
+  const y = 5 + Math.random() * 75;
+  el.style.left = x + 'vw';
+  el.style.top = y + 'vh';
+
+  pool.appendChild(el);
+
+  // Drift parameters
+  const f = {
+    el,
+    x: x,
+    y: y,
+    vx: (Math.random() - 0.5) * 0.003,
+    vy: (Math.random() - 0.5) * 0.002,
+  };
+  floaters.push(f);
+
+  // Fade in
+  if (animate) {
+    requestAnimationFrame(() => el.classList.add('visible'));
+  } else {
+    // Stagger existing words
+    setTimeout(() => el.classList.add('visible'), Math.random() * 2000);
+  }
+}
+
+// Drift animation
+function drift() {
+  for (const f of floaters) {
+    f.x += f.vx;
+    f.y += f.vy;
+
+    // Gentle bounds
+    if (f.x < 2 || f.x > 92) f.vx *= -1;
+    if (f.y < 2 || f.y > 78) f.vy *= -1;
+
+    f.el.style.left = f.x + 'vw';
+    f.el.style.top = f.y + 'vh';
+  }
+  requestAnimationFrame(drift);
+}
+drift();
+
+// Load existing words
+async function loadWords() {
+  try {
+    const res = await fetch('/.netlify/functions/words');
+    const words = await res.json();
+    for (const w of words) {
+      createFloater(w.word, false);
+    }
+  } catch (e) {
+    // Offline or function not deployed yet — that's fine
+  }
+}
+
+// Submit a word
+async function submitWord(word) {
+  createFloater(word, true);
+  try {
+    await fetch('/.netlify/functions/words', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ word }),
+    });
+  } catch (e) {
+    // Silently fail if function not available
+  }
+}
+
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && input.value.trim()) {
+    submitWord(input.value.trim());
+    input.value = '';
+  }
+});
+
+// Focus input on load
+input.focus();
+loadWords();
+</script>
+</body>
+</html>

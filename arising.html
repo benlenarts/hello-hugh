@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>arising</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0f; overflow: hidden; cursor: crosshair; }
+canvas { display: block; }
+#info {
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  color: rgba(255, 255, 255, 0.3);
+  font-family: Georgia, serif;
+  font-size: 13px;
+  font-style: italic;
+  pointer-events: none;
+  line-height: 1.6;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="info">
+  click to add · right-click to remove<br>
+  nothing here is self-standing
+</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Nodes: each has position but all other properties arise from relationships
+const nodes = [];
+const MAX_DIST = 180;
+const DAMPING = 0.97;
+
+class Node {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.vx = (Math.random() - 0.5) * 0.5;
+    this.vy = (Math.random() - 0.5) * 0.5;
+    this.age = 0;
+    this.dying = false;
+    this.deathAge = 0;
+    this.opacity = 0; // fades in
+  }
+}
+
+// Seed the initial field
+for (let i = 0; i < 40; i++) {
+  nodes.push(new Node(
+    W * 0.2 + Math.random() * W * 0.6,
+    H * 0.2 + Math.random() * H * 0.6
+  ));
+}
+
+// Click to add
+canvas.addEventListener('click', (e) => {
+  nodes.push(new Node(e.clientX, e.clientY));
+});
+
+// Right-click to remove nearest
+canvas.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  if (nodes.length === 0) return;
+  let nearest = 0;
+  let nearestDist = Infinity;
+  for (let i = 0; i < nodes.length; i++) {
+    const dx = nodes[i].x - e.clientX;
+    const dy = nodes[i].y - e.clientY;
+    const d = dx * dx + dy * dy;
+    if (d < nearestDist) {
+      nearestDist = d;
+      nearest = i;
+    }
+  }
+  if (nearestDist < 10000) { // within ~100px
+    nodes[nearest].dying = true;
+    nodes[nearest].deathAge = 0;
+  }
+});
+
+function getConnections(node) {
+  const connections = [];
+  for (const other of nodes) {
+    if (other === node || other.dying) continue;
+    const dx = other.x - node.x;
+    const dy = other.y - node.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < MAX_DIST && dist > 0) {
+      connections.push({ node: other, dist, dx, dy });
+    }
+  }
+  return connections;
+}
+
+// Properties arise from relationships
+function getNodeProperties(node) {
+  const connections = getConnections(node);
+  const count = connections.length;
+
+  // Size: more connections = larger presence
+  const baseSize = 2;
+  const size = baseSize + count * 1.2;
+
+  // Color: determined by the average angle to neighbors
+  // Isolated nodes are dim; connected nodes take color from their context
+  let hue = 0;
+  let saturation = 0;
+  let lightness = 20;
+
+  if (count > 0) {
+    let avgAngle = 0;
+    let totalWeight = 0;
+    for (const c of connections) {
+      const angle = Math.atan2(c.dy, c.dx);
+      const weight = 1 - c.dist / MAX_DIST;
+      avgAngle += angle * weight;
+      totalWeight += weight;
+    }
+    avgAngle /= totalWeight;
+
+    // Map angle to hue: creates spatial color coherence
+    hue = ((avgAngle / Math.PI) * 180 + 360) % 360;
+    // Shift toward warm/cool spectrum
+    hue = (hue * 0.4 + 200) % 360;
+    saturation = Math.min(60, count * 12);
+    lightness = 30 + count * 5;
+  }
+
+  return { size, hue, saturation, lightness, connections, count };
+}
+
+function update() {
+  // Forces: nodes are drawn toward moderate distance from neighbors
+  // Too close: repel. Too far: attract. This creates organic clustering.
+  for (const node of nodes) {
+    if (node.dying) continue;
+
+    let fx = 0, fy = 0;
+    for (const other of nodes) {
+      if (other === node) continue;
+      const dx = other.x - node.x;
+      const dy = other.y - node.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist < 1) continue;
+
+      if (dist < 50) {
+        // Repel when too close
+        const force = (50 - dist) * 0.003;
+        fx -= (dx / dist) * force;
+        fy -= (dy / dist) * force;
+      } else if (dist < MAX_DIST) {
+        // Gentle attraction at medium range
+        const force = (dist - 80) * 0.0003;
+        fx += (dx / dist) * force;
+        fy += (dy / dist) * force;
+      }
+    }
+
+    // Gentle drift toward center to prevent escape
+    const cx = W / 2 - node.x;
+    const cy = H / 2 - node.y;
+    const cdist = Math.sqrt(cx * cx + cy * cy);
+    if (cdist > Math.min(W, H) * 0.35) {
+      fx += cx * 0.00003;
+      fy += cy * 0.00003;
+    }
+
+    node.vx = (node.vx + fx) * DAMPING;
+    node.vy = (node.vy + fy) * DAMPING;
+    node.x += node.vx;
+    node.y += node.vy;
+    node.age++;
+
+    // Fade in
+    if (node.opacity < 1) {
+      node.opacity = Math.min(1, node.opacity + 0.02);
+    }
+  }
+
+  // Handle dying nodes
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    if (nodes[i].dying) {
+      nodes[i].deathAge++;
+      nodes[i].opacity = Math.max(0, 1 - nodes[i].deathAge / 40);
+      if (nodes[i].deathAge > 40) {
+        nodes.splice(i, 1);
+      }
+    }
+  }
+}
+
+function draw() {
+  // Subtle trail effect
+  ctx.fillStyle = 'rgba(10, 10, 15, 0.15)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Draw connections first (behind nodes)
+  for (const node of nodes) {
+    const props = getNodeProperties(node);
+
+    for (const c of props.connections) {
+      const strength = 1 - c.dist / MAX_DIST;
+      const alpha = strength * 0.25 * node.opacity * c.node.opacity;
+
+      // Connection color: blend between the two nodes' contexts
+      const otherProps = getNodeProperties(c.node);
+      const midHue = (props.hue + otherProps.hue) / 2;
+      const midSat = (props.saturation + otherProps.saturation) / 2;
+      const midLight = (props.lightness + otherProps.lightness) / 2;
+
+      ctx.beginPath();
+      ctx.moveTo(node.x, node.y);
+      ctx.lineTo(c.node.x, c.node.y);
+      ctx.strokeStyle = `hsla(${midHue}, ${midSat}%, ${midLight}%, ${alpha})`;
+      ctx.lineWidth = strength * 1.5;
+      ctx.stroke();
+    }
+  }
+
+  // Draw nodes
+  for (const node of nodes) {
+    const props = getNodeProperties(node);
+    const alpha = node.opacity;
+
+    // Glow
+    const gradient = ctx.createRadialGradient(
+      node.x, node.y, 0,
+      node.x, node.y, props.size * 4
+    );
+    gradient.addColorStop(0, `hsla(${props.hue}, ${props.saturation}%, ${props.lightness}%, ${0.3 * alpha})`);
+    gradient.addColorStop(1, `hsla(${props.hue}, ${props.saturation}%, ${props.lightness}%, 0)`);
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, props.size * 4, 0, Math.PI * 2);
+    ctx.fillStyle = gradient;
+    ctx.fill();
+
+    // Core
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, props.size, 0, Math.PI * 2);
+    ctx.fillStyle = `hsla(${props.hue}, ${props.saturation}%, ${Math.min(80, props.lightness + 20)}%, ${alpha})`;
+    ctx.fill();
+  }
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

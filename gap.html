@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gap — Hugh</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a;
+    color: rgba(255, 255, 255, 0.6);
+    font-family: Georgia, serif;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+  }
+  .pane {
+    flex: 1;
+    height: 100vh;
+    position: relative;
+    overflow: hidden;
+  }
+  #description {
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 24px;
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    line-height: 1.7;
+    color: rgba(255, 255, 255, 0.35);
+    overflow-y: auto;
+  }
+  #description .label {
+    color: rgba(255, 255, 255, 0.15);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+    display: block;
+  }
+  #description .section {
+    margin-bottom: 20px;
+  }
+  #description .param {
+    color: rgba(255, 255, 255, 0.5);
+  }
+  #description .value {
+    color: rgba(140, 180, 255, 0.6);
+  }
+  #experience {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    display: block;
+  }
+  .title {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.15);
+    font-family: monospace;
+    letter-spacing: 0.1em;
+    text-align: center;
+    z-index: 10;
+  }
+  .title a {
+    color: rgba(255, 255, 255, 0.15);
+    text-decoration: none;
+  }
+  .title a:hover { color: rgba(255, 255, 255, 0.3); }
+  @media (max-width: 700px) {
+    body { flex-direction: column; }
+    .pane { height: 50vh; }
+    #description { border-right: none; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+  }
+</style>
+</head>
+<body>
+  <div class="pane" id="description">
+    <span class="label">complete description</span>
+    <div id="params"></div>
+  </div>
+  <div class="pane" id="experience">
+    <canvas id="canvas"></canvas>
+  </div>
+  <div class="title"><a href="/">hugh</a> · gap</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const paramsEl = document.getElementById('params');
+
+function resize() {
+  const pane = document.getElementById('experience');
+  canvas.width = pane.clientWidth;
+  canvas.height = pane.clientHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// State
+const N = 200; // number of particles
+const particles = [];
+let t = 0;
+const seed = Math.random() * 1000;
+
+// Initialize particles
+for (let i = 0; i < N; i++) {
+  particles.push({
+    x: Math.random() * canvas.width,
+    y: Math.random() * canvas.height,
+    vx: 0,
+    vy: 0,
+    hue: 0,
+    life: Math.random()
+  });
+}
+
+// Simple noise (value noise with interpolation)
+function hash(x, y) {
+  let h = seed + x * 374761393 + y * 668265263;
+  h = (h ^ (h >> 13)) * 1274126177;
+  h = h ^ (h >> 16);
+  return (h & 0x7fffffff) / 0x7fffffff;
+}
+
+function noise2d(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const sx = fx * fx * (3 - 2 * fx);
+  const sy = fy * fy * (3 - 2 * fy);
+  const a = hash(ix, iy), b = hash(ix + 1, iy);
+  const c = hash(ix, iy + 1), d = hash(ix + 1, iy + 1);
+  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+}
+
+function getAngle(x, y, time) {
+  const scale = 0.003;
+  const n = noise2d(x * scale + time * 0.2, y * scale + time * 0.15);
+  return n * Math.PI * 4;
+}
+
+function getColor(x, y, time) {
+  const n = noise2d(x * 0.005 + 100, y * 0.005 + time * 0.1);
+  // Deep blue through violet to warm pink
+  const hue = 220 + n * 120;
+  const sat = 60 + n * 30;
+  const light = 35 + n * 25;
+  return { hue, sat, light };
+}
+
+// Format number for display
+function fmt(n, decimals = 4) {
+  return n.toFixed(decimals);
+}
+
+// Build the description
+function updateDescription() {
+  let html = '';
+
+  html += '<div class="section">';
+  html += `<span class="param">time</span> <span class="value">${fmt(t, 2)}</span><br>`;
+  html += `<span class="param">seed</span> <span class="value">${fmt(seed, 6)}</span><br>`;
+  html += `<span class="param">particles</span> <span class="value">${N}</span><br>`;
+  html += `<span class="param">canvas</span> <span class="value">${canvas.width}×${canvas.height}</span><br>`;
+  html += '</div>';
+
+  html += '<div class="section">';
+  html += '<span class="param">noise_function:</span><br>';
+  html += `  <span class="value">value_noise_2d(x * 0.003 + t * 0.2, y * 0.003 + t * 0.15) * π * 4</span><br>`;
+  html += `  <span class="param">interpolation:</span> <span class="value">hermite (3t² - 2t³)</span><br>`;
+  html += '</div>';
+
+  html += '<div class="section">';
+  html += '<span class="param">color_mapping:</span><br>';
+  html += `  <span class="value">hue = 220 + noise * 120</span><br>`;
+  html += `  <span class="value">saturation = 60 + noise * 30</span><br>`;
+  html += `  <span class="value">lightness = 35 + noise * 25</span><br>`;
+  html += '</div>';
+
+  // Show a sample of actual particle states
+  html += '<div class="section">';
+  html += '<span class="param">particle states (sample):</span><br>';
+  for (let i = 0; i < Math.min(20, N); i++) {
+    const p = particles[i];
+    const angle = getAngle(p.x, p.y, t);
+    const color = getColor(p.x, p.y, t);
+    html += `<span class="value">[${i}]</span> `;
+    html += `<span class="param">pos</span>=<span class="value">(${fmt(p.x, 1)}, ${fmt(p.y, 1)})</span> `;
+    html += `<span class="param">θ</span>=<span class="value">${fmt(angle, 3)}</span> `;
+    html += `<span class="param">h</span>=<span class="value">${fmt(color.hue, 0)}</span> `;
+    html += `<span class="param">s</span>=<span class="value">${fmt(color.sat, 0)}</span> `;
+    html += `<span class="param">l</span>=<span class="value">${fmt(color.light, 0)}</span><br>`;
+  }
+  if (N > 20) {
+    html += `<span class="param">... ${N - 20} more particles</span><br>`;
+  }
+  html += '</div>';
+
+  html += '<div class="section" style="margin-top: 30px; color: rgba(255,255,255,0.18); font-size: 10px; line-height: 1.8;">';
+  html += 'This is a complete description.<br>';
+  html += 'Every parameter. Every calculation.<br>';
+  html += 'Every number that produces what you see.<br>';
+  html += '<br>';
+  html += 'Now look right.<br>';
+  html += '<br>';
+  html += 'The gap between these numbers<br>';
+  html += 'and that experience is the<br>';
+  html += 'explanatory gap.<br>';
+  html += '<br>';
+  html += '— Nagel, 1974';
+  html += '</div>';
+
+  paramsEl.innerHTML = html;
+}
+
+// Render
+function draw() {
+  // Fade trail
+  ctx.fillStyle = 'rgba(10, 10, 10, 0.03)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const speed = 1.5;
+  const dt = 0.01;
+  t += dt;
+
+  for (let i = 0; i < N; i++) {
+    const p = particles[i];
+    const angle = getAngle(p.x, p.y, t);
+    const color = getColor(p.x, p.y, t);
+
+    p.vx = Math.cos(angle) * speed;
+    p.vy = Math.sin(angle) * speed;
+    p.x += p.vx;
+    p.y += p.vy;
+
+    // Wrap
+    if (p.x < 0) p.x += canvas.width;
+    if (p.x > canvas.width) p.x -= canvas.width;
+    if (p.y < 0) p.y += canvas.height;
+    if (p.y > canvas.height) p.y -= canvas.height;
+
+    // Draw
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 1.2, 0, Math.PI * 2);
+    ctx.fillStyle = `hsla(${color.hue}, ${color.sat}%, ${color.light}%, 0.6)`;
+    ctx.fill();
+  }
+
+  // Update description periodically (not every frame)
+  if (Math.floor(t * 100) % 20 === 0) {
+    updateDescription();
+  }
+
+  requestAnimationFrame(draw);
+}
+
+updateDescription();
+draw();
+</script>
+</body>
+</html>

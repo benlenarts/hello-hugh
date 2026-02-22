@@ -18,7 +18,9 @@ export default async (request) => {
     }
 
     const words = (await store.get("all", { type: "json" })) || [];
-    words.push({ word, time: Date.now() });
+    const entry = { word, time: Date.now() };
+    if (body.from) entry.from = String(body.from).slice(0, 20);
+    words.push(entry);
 
     // Keep last 200 words
     if (words.length > 200) words.splice(0, words.length - 200);

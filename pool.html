@@ -28,6 +28,10 @@
   .floating-word.visible {
     color: rgba(255, 255, 255, 0.5);
   }
+  .floating-word.from-hugh.visible {
+    color: rgba(140, 170, 220, 0.45);
+    font-style: italic;
+  }
   #input-area {
     position: fixed;
     bottom: 40px;
@@ -88,9 +92,10 @@ const H = window.innerHeight;
 // Each word drifts slowly
 const floaters = [];
 
-function createFloater(word, animate = true) {
+function createFloater(word, animate = true, from = null) {
   const el = document.createElement('div');
   el.className = 'floating-word';
+  if (from === 'hugh') el.classList.add('from-hugh');
   el.textContent = word;
 
   // Random position, avoiding the input area at bottom
@@ -143,7 +148,7 @@ async function loadWords() {
     const res = await fetch('/.netlify/functions/words');
     const words = await res.json();
     for (const w of words) {
-      createFloater(w.word, false);
+      createFloater(w.word, false, w.from);
     }
   } catch (e) {
     // Offline or function not deployed yet — that's fine

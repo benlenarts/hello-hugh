@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>apollonian</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #07070a; overflow: hidden; font-family: Georgia, serif; }
+canvas { display: block; }
+#info {
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  color: rgba(255, 255, 255, 0.32);
+  font-size: 13px;
+  font-style: italic;
+  pointer-events: none;
+  line-height: 1.6;
+  max-width: 420px;
+}
+#info .label { font-style: normal; color: rgba(255,255,255,0.55); }
+#info .faint { color: rgba(255,255,255,0.18); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="info">
+  <span class="label">apollonian packing</span><br>
+  every curvature is an integer.<br>
+  <span class="faint">haag–kertzer–rickards–stange, 2023: some integers are forbidden.</span>
+</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, scale, cx, cy;
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  const m = Math.min(W, H) * 0.45;
+  scale = m;
+  cx = W / 2;
+  cy = H / 2;
+}
+resize();
+window.addEventListener('resize', () => { resize(); reset(); });
+
+// ---- Apollonian construction ----
+// Circles stored as { x, y, k }  where k = curvature (1/r, signed).
+// Bounding circle has k < 0.
+
+const MAX_CURVATURE = 800;       // stop descending when circles get too small
+
+function descartesK(k1, k2, k3) {
+  // two solutions for the 4th curvature, sign chooses interior/exterior
+  const s = Math.sqrt(Math.max(0, k1*k2 + k2*k3 + k1*k3));
+  return [k1 + k2 + k3 + 2*s, k1 + k2 + k3 - 2*s];
+}
+
+// Complex Descartes theorem: centers satisfy the analogous relation.
+// Given three circles, with known "one" tangent fourth (k4, z4), the "other"
+// tangent fourth (k4', z4') satisfies Vieta's jumping:
+//   k4' = 2*(k1+k2+k3) - k4
+//   z4'*k4' = 2*(z1*k1 + z2*k2 + z3*k3) - z4*k4
+
+function jump(c1, c2, c3, c4) {
+  const kNew = 2*(c1.k + c2.k + c3.k) - c4.k;
+  if (kNew > MAX_CURVATURE) return null;
+  const kzx = 2*(c1.x*c1.k + c2.x*c2.k + c3.x*c3.k) - c4.x*c4.k;
+  const kzy = 2*(c1.y*c1.k + c2.y*c2.k + c3.y*c3.k) - c4.y*c4.k;
+  return { x: kzx / kNew, y: kzy / kNew, k: kNew };
+}
+
+function tangent(a, b, tol = 1e-6) {
+  const dx = a.x - b.x, dy = a.y - b.y;
+  const d2 = dx*dx + dy*dy;
+  const ra = 1 / Math.abs(a.k), rb = 1 / Math.abs(b.k);
+  // internal tangency if one contains the other
+  const sumR = ra + rb, diffR = Math.abs(ra - rb);
+  const d = Math.sqrt(d2);
+  return Math.abs(d - sumR) < tol || Math.abs(d - diffR) < tol;
+}
+
+// Classic starting configuration: (-1, 2, 2, 3, 3)
+// Bounding circle of radius 1 at origin; two tangent halves; two small caps.
+function initialCircles() {
+  const C = [
+    { x: 0,        y: 0,       k: -1 },   // bounding
+    { x: -0.5,     y: 0,       k:  2 },   // left
+    { x:  0.5,     y: 0,       k:  2 },   // right
+    { x:  0,       y:  2/3,    k:  3 },   // top
+    { x:  0,       y: -2/3,    k:  3 },   // bottom
+  ];
+  return C;
+}
+
+function generate() {
+  const circles = initialCircles();
+  // We recurse by picking a triple and a "known" fourth, then jumping to find the "other" fourth.
+  // Using BFS with a canonical triple-key to avoid revisits.
+  const seen = new Set();
+  const key = (k1, k2, k3, x, y) =>
+    [k1, k2, k3].sort((a,b)=>a-b).join(',') + '|' + x.toFixed(8) + ',' + y.toFixed(8);
+
+  // Seed triples from the initial configuration.
+  // For each triple (c1,c2,c3) among the starting 5 that is mutually tangent,
+  // find both tangent fourths and push jumps.
+  const start = circles.slice();
+  const triples = [];
+  for (let i = 0; i < start.length; i++)
+    for (let j = i+1; j < start.length; j++)
+      for (let m = j+1; m < start.length; m++) {
+        const a = start[i], b = start[j], c = start[m];
+        if (tangent(a,b) && tangent(b,c) && tangent(a,c)) {
+          triples.push([a,b,c]);
+        }
+      }
+
+  const queue = [];
+  for (const [a,b,c] of triples) {
+    // Find the two fourth circles among already-generated
+    const fourths = start.filter(x => x !== a && x !== b && x !== c &&
+                                       tangent(x,a) && tangent(x,b) && tangent(x,c));
+    for (const f of fourths) {
+      queue.push([a,b,c,f]);
+    }
+  }
+
+  let steps = 0;
+  while (queue.length && steps < 50000) {
+    steps++;
+    const [a,b,c,d] = queue.shift();
+    const next = jump(a, b, c, d);
+    if (!next) continue;
+    const k = key(a.k, b.k, c.k, next.x, next.y);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    circles.push(next);
+    // spawn new triples containing `next` plus two of {a,b,c}
+    queue.push([a, b, next, c]);
+    queue.push([a, c, next, b]);
+    queue.push([b, c, next, a]);
+  }
+  return circles;
+}
+
+// ---- Render ----
+let circles = [];
+let drawIdx = 0;
+let fadeStart = 0;
+
+function reset() {
+  circles = generate();
+  // Draw larger circles first so the small ones sit on top
+  circles.sort((a,b) => Math.abs(a.k) - Math.abs(b.k));
+  drawIdx = 0;
+  fadeStart = performance.now();
+  ctx.fillStyle = '#07070a';
+  ctx.fillRect(0, 0, W, H);
+}
+
+function colorFor(k) {
+  const ak = Math.abs(k);
+  // pale cool → warm amber as curvature grows
+  const t = Math.min(1, Math.log(ak + 1) / Math.log(200));
+  const r = 180 + 60*t;
+  const g = 200 - 80*t;
+  const b = 230 - 180*t;
+  const a = 0.18 + 0.42*(1 - t);   // larger circles brighter, smallest faint
+  return `rgba(${r|0},${g|0},${b|0},${a.toFixed(3)})`;
+}
+
+function drawCircle(c) {
+  const r = 1 / Math.abs(c.k) * scale;
+  if (r < 0.4) return;
+  const x = cx + c.x * scale;
+  const y = cy + c.y * scale;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.lineWidth = c.k < 0 ? 1.2 : Math.max(0.4, 1.1 - Math.log(Math.abs(c.k))*0.12);
+  ctx.strokeStyle = colorFor(c.k);
+  ctx.stroke();
+}
+
+function frame(t) {
+  // draw circles progressively so you watch the packing emerge.
+  // Start slow, accelerate so the piece completes in ~15s.
+  const progress = drawIdx / Math.max(1, circles.length);
+  const per = Math.max(2, Math.round(3 + progress * 60));
+  const end = Math.min(circles.length, drawIdx + per);
+  for (let i = drawIdx; i < end; i++) drawCircle(circles[i]);
+  drawIdx = end;
+  if (drawIdx < circles.length) requestAnimationFrame(frame);
+}
+
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
